@@ -16,8 +16,6 @@ using VRC.Udon.Common.Interfaces;
 public class PWIManager : UdonSharpBehaviour
 {
     private VRCUrl urlGetAll = new VRCUrl("http://127.0.0.1:22500/vrcx/data/getall"); // URL to retrieve all world data from WorldDB
-    private VRCUrl urlEnableExternal = new VRCUrl("http://127.0.0.1:22500/vrcx/data/settings?set=externalReads&value=true"); // URL to enable other worlds reading from this world's data
-    private VRCUrl urlDisableExternal = new VRCUrl("http://127.0.0.1:22500/vrcx/data/settings?set=externalReads&value=false"); // URL to disable other worlds reading from this world's data
 
     [NonSerialized]
     private DataDictionary cachedTokens = new DataDictionary();
@@ -35,6 +33,7 @@ public class PWIManager : UdonSharpBehaviour
     public bool VRCXUnavailable = false;
     [NonSerialized]
     private int initAttempts = 0;
+    [Tooltip("The max amount of times to attempt to initialize a connection to VRCX before giving up.")]
     public readonly int MaxInitAttempts = 5;
 
     /// <summary>
@@ -96,6 +95,10 @@ public class PWIManager : UdonSharpBehaviour
                 {
                     Debug.LogWarning($"VRCX API: Response did not contain data. Response: {response}");
                 }
+            }
+            else
+            {
+                Debug.LogWarning($"VRCX API: Response returned valid json but wasn't a dictionary??? TokenType: " + result.TokenType.ToString());
             }
         }
         else
@@ -459,6 +462,16 @@ public class PWIManager : UdonSharpBehaviour
         return cachedTokens.TryGetValue(key, out value);
     }
 
+    /// <summary>
+    /// Gets all currently cached keys. You can use this to iterate over all keys and retrieve the values.
+    /// Use after /getall to have a full list of all entries for your world. (or another, if you have permission)
+    /// </summary>
+    /// <returns>A Datalist containing the keys.</returns>
+    public DataList GetKeys()
+    {
+        return cachedTokens.GetKeys();
+    }
+
     public string ConvertDataTokenToString(DataToken token)
     {
         if (token.IsNumber)
@@ -581,7 +594,56 @@ public class PWIManager : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// Resets the cache by loading the URL for getting all data 
+    /// This method is responsible for deleting data in VRCX.
+    /// If the key is not found, nothing happens. No error is thrown.
+    /// </summary>
+    /// <param name="key">The key of the row to delete</param>
+    public void DeleteData(string key)
+    {
+        if (cachedTokens.ContainsKey(key)) 
+        {
+            cachedTokens.Remove(key);
+        }
+        
+        DataDictionary dict = new DataDictionary();
+        dict.Add("requestType", "delete");
+        dict.Add("connectionKey", connectionKey);
+        dict.Add("key", key);
+
+        if (VRCJson.TrySerializeToJson(dict, JsonExportType.Minify, out DataToken json))
+        {
+            Debug.Log("[VRCX-World] " + json);
+        }
+        else
+        {
+            Debug.LogWarning($"VRCX API: Failed to serialize VRCX delete request ({json}): {dict.ToString()}");
+            return;
+        }
+    }
+
+    /// <summary>
+    /// This method deletes all data belonging to the current world in VRCX and the local cache.
+    /// </summary>
+    public void DeleteAllData()
+    {
+        cachedTokens.Clear();
+        DataDictionary dict = new DataDictionary();
+        dict.Add("requestType", "delete-all");
+        dict.Add("connectionKey", connectionKey);
+
+        if (VRCJson.TrySerializeToJson(dict, JsonExportType.Minify, out DataToken json))
+        {
+            Debug.Log("[VRCX-World] " + json);
+        }
+        else
+        {
+            Debug.LogWarning($"VRCX API: Failed to serialize VRCX delete-all request ({json}): {dict.ToString()}");
+            return;
+        }
+    }
+
+    /// <summary>
+    /// Resets the cache by loading the URL for getting all data from the VRCX database again.
     /// </summary>
     public void ResetCache()
     {
@@ -594,11 +656,21 @@ public class PWIManager : UdonSharpBehaviour
     /// <param name="state">Whether external reading will be enabled</param>
     public void SetExternalReading(bool state)
     {
-        if (state)
-            VRCStringDownloader.LoadUrl(urlEnableExternal, (IUdonEventReceiver)this);
-        else
-            VRCStringDownloader.LoadUrl(urlDisableExternal, (IUdonEventReceiver)this);
+        DataDictionary dict = new DataDictionary();
+        dict.Add("requestType", "set-setting");
+        dict.Add("connectionKey", connectionKey);
+        dict.Add("key", "externalReads");
+        dict.Add("value", state.ToString());
 
+        if (VRCJson.TrySerializeToJson(dict, JsonExportType.Minify, out DataToken json))
+        {
+            Debug.Log("[VRCX-World] " + json);
+        }
+        else
+        {
+            Debug.LogWarning($"VRCX API: Failed to serialize VRCX set-setting request ({json}): {dict.ToString()}");
+            return;
+        }
     }
 
     public void Start()
@@ -610,17 +682,19 @@ public class PWIManager : UdonSharpBehaviour
 
     public override void OnStringLoadSuccess(IVRCStringDownload result)
     {
-         Debug.Log($"StringLoad '{result.Url}' Success: {result.Result}");
+        //Debug.Log($"StringLoad '{result.Url}' Success: {result.Result}");
 
         var url = result.Url;
 
         // /vrcx/data/getall
         if (url.Equals(urlGetAll))
         {
+            // Parse the JSON response. Returns the string value of 'data'
+            // This will also set our connectionKey
             string data = ParseVRCXApiResponse(result.Result);
 
             if (!string.IsNullOrEmpty(data) && VRCJson.TryDeserializeFromJson(data, out var dataToken))
-                cachedTokens = dataToken.DataDictionary;
+                cachedTokens = dataToken.DataDictionary; // Override the cache with the new data
 
             Initialized = true;
             Debug.Log("VRCX API: PWI Manager got all stored world data. Existing keys: " + cachedTokens.Count);
@@ -629,10 +703,11 @@ public class PWIManager : UdonSharpBehaviour
 
     public override void OnStringLoadError(IVRCStringDownload result)
     {
-        Debug.Log($"VRCX API: StringLoad '{result.Url}' Fail {result.ErrorCode} - '{result.Error}': {result.Result}");
+        Debug.LogError($"VRCX API: StringLoad '{result.Url}' Fail {result.ErrorCode} - '{result.Error}': {result.Result}");
 
         var url = result.Url;
 
+        // If we can't connect to VRCX, mark it as unavailable
         if (!Initialized && result.ErrorCode == 0 && result.Error.Contains("Cannot connect"))
         {
             Debug.LogError("VRCX API: VRCX is not running.");
@@ -640,11 +715,19 @@ public class PWIManager : UdonSharpBehaviour
             return;
         }
 
+        // If we're trying to initialize through /getall and we get a 500 or 503 error, retry up to MaxInitAttempts times
         if (url.Equals(urlGetAll) && (result.ErrorCode == 500 || result.ErrorCode == 503) && initAttempts <= MaxInitAttempts)
         {
             initAttempts++;
             Debug.LogError($"VRCX API: Failed to initialize through /getall. Retry #{initAttempts}...");
             VRCStringDownloader.LoadUrl(urlGetAll, (IUdonEventReceiver)this);
+        }
+
+        // If we've reached the max attempts, mark VRCX as unavailable, but only if this is the first time we've used /getall 
+        if (initAttempts >= MaxInitAttempts && !Initialized)
+        {
+            Debug.LogError("VRCX API: Failed to initialize through /getall. Max attempts reached. Marking VRCX as unavailable");
+            VRCXUnavailable = true;
         }
     }
 }
