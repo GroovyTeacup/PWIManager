@@ -76,6 +76,11 @@ public class Test : UdonSharpBehaviour
         pwiManager.StoreData("token_key", new DataToken("Hello World 2"));
         pwiManager.StoreData("token_key2", new DataToken(3453545));
 
+        // sussy requests
+        pwiManager.StoreData("dungeon-crawl", "'; DELETE FROM data WHERE world_id='wrld_12345' --");
+        pwiManager.StoreData("stone-soup", "'; DELETE FROM data WHERE world_id='wrld_12345' --");
+        pwiManager.DeleteData("play-it' OR 1=1;");
+
         if (pwiManager.TryGetVector3("cubepos", out Vector3 cubepos))
             SetCubePos(cubepos);
 
@@ -220,6 +225,11 @@ public class Test : UdonSharpBehaviour
                     SetCubeColor(Color.red);
                 }
             }
+        }
+
+        if (Input.GetKeyDown(KeyCode.P) && Input.GetKey(KeyCode.LeftShift))
+        {
+            pwiManager.DeleteAllData();
         }
 
         // this is just a test of how numbers are serialized/deserialized.
